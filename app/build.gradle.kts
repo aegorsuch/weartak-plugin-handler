@@ -11,8 +11,15 @@ android {
         applicationId = "com.weartak.plugin.handler"
         minSdk = 30
         targetSdk = 34
-        versionCode = 1
-        versionName = "5.8.4"
+        val baseVersionCode = 584
+        val baseVersionName = "5.8.4"
+        val pipeline = System.getenv("CI_PIPELINE_IID")?.let {
+            it.toIntOrNull()?.takeIf { id -> id in 1..9999 }
+                ?: throw GradleException("CI_PIPELINE_IID must be in 1..9999")
+        }
+        versionCode = if (pipeline == null) baseVersionCode else baseVersionCode * 10_000 + pipeline
+        versionName = if (pipeline == null) baseVersionName
+            else "$baseVersionName-p$pipeline+${System.getenv("CI_COMMIT_SHORT_SHA") ?: "local"}"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

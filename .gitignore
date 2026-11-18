@@ -13,3 +13,4 @@ signing.properties
 captures/
 .externalNativeBuild/
 .cxx/
+__pycache__/

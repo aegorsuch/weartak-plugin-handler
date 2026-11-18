@@ -42,12 +42,34 @@ can invalidate estimates.
 The generated debug APK is under `app/build/outputs/apk/debug/`. The SDK AARs in `app/libs/`
 are built from the pinned SDK source revision documented in
 [`third_party/weartak-plugin-sdk/NOTICE.md`](third_party/weartak-plugin-sdk/NOTICE.md).
-GitHub Actions runs unit tests and a debug build on branch pushes and pull requests. Pushing a
-version-matching tag such as `v5.8.4` runs a signed release build and publishes an APK named
-`WearTAK-Plugin-Handler-5.8.4-p<N>.apk`. Configure these GitHub Actions secrets for releases:
-`WEARTAK_RELEASE_KEYSTORE_B64`, `RELEASE_STORE_PASSWORD`, `RELEASE_KEY_ALIAS`, and
-`RELEASE_KEY_PASSWORD`. Release signing uses the WearTAK sideload certificate; no signing key
-is included in this repository.
+GitHub Actions runs unit tests and a debug build. TAK.gov alone signs releases with the
+WearTAK production key. A protected `main` push produces a verified
+`WearTAK-Plugin-Handler-5.8.4-p<N>.apk` (`N` is the project pipeline IID), fast-forwards
+GitHub `main`, and updates the rolling GitHub release when publication is enabled. A protected
+version tag such as `v5.8.4` must match the app base version and point to a commit already in
+public `main` before it is mirrored. Tag pipelines retain a signed artifact on TAK.gov but
+do not replace the rolling GitHub release. Only reviewed public content belongs on `main`.
+
+Release setup:
+
+1. Protect `main` and restrict version tag creation to release maintainers on
+   [TAK.gov](https://git.tak.gov/weartak-plugins/weartak-plugin-handler/-/settings/repository).
+   Signing variables are inherited from the WearTAK plugin group; do not put signing keys on GitHub.
+2. In [TAK.gov CI/CD settings](https://git.tak.gov/weartak-plugins/weartak-plugin-handler/-/settings/ci_cd),
+   provision `HANDLER_GITHUB_TOKEN` as a masked, hidden, protected, non-expanding service
+   credential limited to the Handler mirror. It needs GitHub Contents write for refs and
+   releases, and Workflows write to mirror changes under `.github/workflows/`. If GitHub
+   restricts pushes to `main`, allow this service identity to push without allowing force pushes.
+3. Set protected `HANDLER_GITHUB_SYNC_ENABLED=true` for automatic ref sync.
+   To enable rolling publication, pre-create `TAK.gov-Forge-CI-CD-Pipeline-Release` on a
+   commit already in GitHub `main` and set protected `HANDLER_GITHUB_RELEASE_ENABLED=true`.
+   Enable before the next approved release push, not to test publication.
+4. Set `RELEASE_TESTER` to an authorized GitHub username in
+   [Actions variables](https://github.com/aegorsuch/weartak-plugin-handler/settings/variables/actions).
+   After a verified publish, the release-testing workflow opens one checklist per pipeline.
+
+Publisher and checklist tooling adapted from the GPLv3
+[WearTAK LACE pipeline](https://github.com/aegorsuch/weartak-plugin-lace/tree/main/ci).
 
 ## Developer Notes
 
