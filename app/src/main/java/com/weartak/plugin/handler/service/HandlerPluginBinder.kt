@@ -44,14 +44,16 @@ class HandlerPluginBinder(
 
     override fun getStatus(): PluginStatusParcel {
         val state = lifecycle.snapshot()
+        val monitoring = HandlerRuntime.snapshot()
         val message = when {
-            HandlerRuntime.monitoring -> "Animal movement monitoring active in Handler app"
+            monitoring.monitoring -> "Harness monitoring active"
             state == PluginLifecycleState.SHUTDOWN -> "Plugin shut down"
             else -> "Open WearTAK Handler on the watch to start monitoring"
         }
         val extras = Bundle().apply {
-            putBoolean("monitoring", HandlerRuntime.monitoring)
-            HandlerRuntime.latestEstimate?.let { estimate ->
+            putBoolean("monitoring", monitoring.monitoring)
+            monitoring.freshEstimate(HandlerRuntime.nowNanos())?.let { estimate ->
+                putDouble(HandlerRuntime.EXERTION_FRACTION, estimate.exertionFraction)
                 estimate.breathsPerMinute?.let { putInt("breaths_per_minute", it) }
                 putDouble("movement_rms_mps2", estimate.movementRmsMetersPerSecondSquared)
                 putString("exertion_level", estimate.exertionLevel.name)

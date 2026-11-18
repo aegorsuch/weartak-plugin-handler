@@ -1,4 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">WearTAK Handler</string>
+    <string name="harness_exertion">Motion-derived exertion</string>
+    <string name="harness_score">%1$d / 100</string>
+    <string name="harness_no_score">-- / 100</string>
+    <string name="harness_active">Motion estimate · Monitoring on</string>
+    <string name="harness_high_movement">Sustained high movement. Check the animal.</string>
+    <string name="harness_collecting">Collecting motion data…</string>
+    <string name="harness_signal_lost">No recent score</string>
+    <string name="harness_recovering">Check the mount. Waiting for usable motion data.</string>
+    <string name="harness_off">Mount securely, then start.</string>
+    <string name="harness_start_failed">Could not start. Try again.</string>
+    <string name="harness_sensor_unavailable">Accelerometer unavailable</string>
+    <string name="harness_start">Start monitoring</string>
+    <string name="harness_stop">Stop monitoring</string>
+    <string name="harness_monitoring">Handler monitoring</string>
+    <string name="harness_screen_off">Sampling with the screen off</string>
 </resources>

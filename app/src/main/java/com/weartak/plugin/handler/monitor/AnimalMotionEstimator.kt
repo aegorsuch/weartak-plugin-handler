@@ -17,7 +17,14 @@ data class AnimalMotionEstimate(
     val movementRmsMetersPerSecondSquared: Double,
     val exertionLevel: ExertionLevel,
     val highMovementAlert: Boolean,
-)
+) {
+    val exertionFraction: Double
+        get() = (movementRmsMetersPerSecondSquared / SCORE_FULL_SCALE_MPS2).coerceIn(0.0, 1.0)
+
+    private companion object {
+        const val SCORE_FULL_SCALE_MPS2 = 2.5
+    }
+}
 
 /**
  * Motion-derived estimate. It is intentionally conservative: irregular sampling, low confidence,
@@ -37,6 +44,8 @@ class AnimalMotionEstimator(
     private val samples = ArrayDeque<Sample>()
     private var lastEstimateNanos = Long.MIN_VALUE
     private var consecutiveHighWindows = 0
+    internal var windowRejected = false
+        private set
 
     fun addSample(timestampNanos: Long, x: Float, y: Float, z: Float): AnimalMotionEstimate? {
         if (timestampNanos < 0L || !x.isFinite() || !y.isFinite() || !z.isFinite()) return null
@@ -55,23 +64,31 @@ class AnimalMotionEstimator(
         }
 
         val windowStart = timestampNanos - windowMillis * NANOS_PER_MILLI
-        val window = samples.filter { it.timestampNanos >= windowStart }
-        if (window.size < MIN_WINDOW_SAMPLES ||
-            window.last().timestampNanos - window.first().timestampNanos < windowMillis * NANOS_PER_MILLI
-        ) {
+        if (samples.first.timestampNanos > windowStart) return null
+        lastEstimateNanos = timestampNanos
+
+        // Use the nearest sample at or before the boundary; watch samples rarely land exactly on it.
+        val buffered = samples.toList()
+        val boundary = buffered.indexOfLast { it.timestampNanos <= windowStart }
+        val window = buffered.subList(boundary, buffered.size)
+        if (window.size < MIN_WINDOW_SAMPLES || windowStart - window.first().timestampNanos > MAX_HARNESS_GAP_NANOS) {
+            consecutiveHighWindows = 0
+            windowRejected = true
             return null
         }
-        lastEstimateNanos = timestampNanos
 
         val durationSeconds =
             (window.last().timestampNanos - window.first().timestampNanos).toDouble() / NANOS_PER_SECOND
         val sampleRateHz = (window.size - 1) / durationSeconds
         val largestGapNanos = window.zipWithNext { left, right -> right.timestampNanos - left.timestampNanos }.max()
         if (sampleRateHz !in MIN_SAMPLE_RATE_HZ..MAX_SAMPLE_RATE_HZ ||
-            largestGapNanos > MAX_SAMPLE_GAP_NANOS
+            largestGapNanos > MAX_HARNESS_GAP_NANOS
         ) {
+            consecutiveHighWindows = 0
+            windowRejected = true
             return null
         }
+        windowRejected = false
 
         val axes = listOf(window.map { it.x }, window.map { it.y }, window.map { it.z })
         val demeanedAxes = axes.map { axis ->
@@ -107,6 +124,7 @@ class AnimalMotionEstimator(
         samples.clear()
         lastEstimateNanos = Long.MIN_VALUE
         consecutiveHighWindows = 0
+        windowRejected = false
     }
 
     private fun estimateRespiration(axes: List<List<Double>>, sampleRateHz: Double): Pair<Int, Double>? {
@@ -152,7 +170,6 @@ class AnimalMotionEstimator(
         const val MIN_WINDOW_SAMPLES = 90
         const val MIN_SAMPLE_RATE_HZ = 10.0
         const val MAX_SAMPLE_RATE_HZ = 200.0
-        const val MAX_SAMPLE_GAP_NANOS = 250_000_000L
         const val MIN_BREATH_PERIOD_SECONDS = 0.5
         const val MAX_BREATH_PERIOD_SECONDS = 10.0
         const val MIN_BREATHS_PER_MINUTE = 6

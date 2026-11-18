@@ -1,156 +1,113 @@
 package com.weartak.plugin.handler
 
 import android.app.Activity
-import android.content.Context
-import android.hardware.Sensor
-import android.hardware.SensorEvent
-import android.hardware.SensorEventListener
-import android.hardware.SensorManager
-import android.os.Build
+import android.content.Intent
 import android.os.Bundle
-import android.os.VibrationEffect
-import android.os.Vibrator
-import android.os.VibratorManager
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
 import android.view.Gravity
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import com.weartak.plugin.handler.monitor.AnimalMotionEstimate
-import com.weartak.plugin.handler.monitor.AnimalMotionEstimator
-import com.weartak.plugin.handler.monitor.ExertionLevel
+import androidx.core.content.ContextCompat
 import com.weartak.plugin.handler.monitor.HandlerRuntime
-import java.util.Locale
+import com.weartak.plugin.handler.service.HarnessMonitoringService
+import kotlin.math.roundToInt
 
-class MainActivity : Activity(), SensorEventListener {
-    private lateinit var sensorManager: SensorManager
-    private var accelerometer: Sensor? = null
-    private val estimator = AnimalMotionEstimator()
-    private var monitoring = false
-    private var lastHighMovementAlert = false
-    private lateinit var statusText: TextView
-    private lateinit var estimateText: TextView
-    private lateinit var startButton: Button
-    private lateinit var stopButton: Button
+class MainActivity : Activity() {
+    private lateinit var score: TextView
+    private lateinit var status: TextView
+    private lateinit var toggle: Button
+    private var startFailed = false
+    private val handler = Handler(Looper.getMainLooper())
+    private val refresh = object : Runnable {
+        override fun run() {
+            render()
+            handler.postDelayed(this, 500L)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
-        accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-        setContentView(createContent())
-        if (accelerometer == null) {
-            statusText.text = "Accelerometer unavailable"
-            startButton.isEnabled = false
-        }
-    }
-
-    override fun onResume() {
-        super.onResume()
-        if (monitoring) registerSensor()
-    }
-
-    override fun onPause() {
-        stopMonitoring()
-        super.onPause()
-    }
-
-    override fun onSensorChanged(event: SensorEvent) {
-        val estimate = estimator.addSample(
-            timestampNanos = event.timestamp,
-            x = event.values[0],
-            y = event.values[1],
-            z = event.values[2],
-        ) ?: return
-        HandlerRuntime.setEstimate(estimate)
-        render(estimate)
-        if (estimate.highMovementAlert && !lastHighMovementAlert) vibrate()
-        lastHighMovementAlert = estimate.highMovementAlert
-    }
-
-    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
-
-    private fun createContent(): ScrollView {
-        statusText = TextView(this).apply {
-            text = "Secure the watch against the animal's side. Keep placement steady."
-            textSize = 14f
+        score = TextView(this).apply {
+            setTextAppearance(android.R.style.TextAppearance_Material_Headline)
             gravity = Gravity.CENTER
         }
-        estimateText = TextView(this).apply {
-            text = "Breathing: waiting for 30 seconds of data\nMovement: --"
-            textSize = 18f
+        status = TextView(this).apply {
             gravity = Gravity.CENTER
         }
-        startButton = Button(this).apply {
-            text = "Start monitoring"
-            setOnClickListener { startMonitoring() }
+        toggle = Button(this).apply {
+            minHeight = dp(48)
+            setOnClickListener {
+                val intent = Intent(this@MainActivity, HarnessMonitoringService::class.java)
+                if (HandlerRuntime.snapshot().monitoring) {
+                    stopService(intent)
+                } else {
+                    startFailed = false
+                    try {
+                        ContextCompat.startForegroundService(
+                            this@MainActivity, intent.setAction(HarnessMonitoringService.ACTION_START),
+                        )
+                    } catch (error: IllegalStateException) {
+                        Log.w("WearTAKHandler", "Cannot start harness monitoring", error)
+                        startFailed = true
+                    } catch (error: SecurityException) {
+                        Log.w("WearTAKHandler", "Harness service permission denied", error)
+                        startFailed = true
+                    }
+                }
+                render()
+            }
         }
-        stopButton = Button(this).apply {
-            text = "Stop"
-            isEnabled = false
-            setOnClickListener { stopMonitoring() }
-        }
-        return ScrollView(this).apply {
+        setContentView(ScrollView(this).apply {
             isFillViewport = true
-            addView(
-                LinearLayout(this@MainActivity).apply {
-                    orientation = LinearLayout.VERTICAL
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding(dp(20), dp(16), dp(20), dp(16))
+                addView(TextView(this@MainActivity).apply {
+                    setText(R.string.harness_exertion)
                     gravity = Gravity.CENTER
-                    setPadding(24, 28, 24, 28)
-                    addView(statusText)
-                    addView(estimateText)
-                    addView(startButton)
-                    addView(stopButton)
-                },
-            )
-        }
+                })
+                addView(score)
+                addView(status)
+                addView(toggle)
+            })
+        })
     }
 
-    private fun startMonitoring() {
-        if (monitoring || accelerometer == null) return
-        estimator.reset()
-        HandlerRuntime.setEstimate(null)
-        lastHighMovementAlert = false
-        monitoring = true
-        HandlerRuntime.setMonitoring(true)
-        statusText.text = "Monitoring while this screen is open"
-        startButton.isEnabled = false
-        stopButton.isEnabled = true
-        registerSensor()
+    override fun onStart() {
+        super.onStart()
+        refresh.run()
     }
 
-    private fun registerSensor() {
-        accelerometer?.let {
-            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
-        }
+    override fun onStop() {
+        handler.removeCallbacks(refresh)
+        super.onStop()
     }
 
-    private fun stopMonitoring() {
-        if (!monitoring) return
-        sensorManager.unregisterListener(this)
-        monitoring = false
-        HandlerRuntime.setMonitoring(false)
-        statusText.text = "Monitoring stopped"
-        startButton.isEnabled = accelerometer != null
-        stopButton.isEnabled = false
+    private fun render() {
+        val state = HandlerRuntime.snapshot()
+        val estimate = state.freshEstimate(HandlerRuntime.nowNanos())
+        score.text = estimate?.let {
+            getString(R.string.harness_score, (it.exertionFraction * 100).roundToInt())
+        } ?: getString(R.string.harness_no_score)
+        status.setText(
+            when {
+                estimate?.highMovementAlert == true -> R.string.harness_high_movement
+                estimate != null -> R.string.harness_active
+                state.recovering -> R.string.harness_recovering
+                state.monitoring && state.estimate != null -> R.string.harness_signal_lost
+                state.monitoring -> R.string.harness_collecting
+                startFailed -> R.string.harness_start_failed
+                state.sensorUnavailable -> R.string.harness_sensor_unavailable
+                else -> R.string.harness_off
+            },
+        )
+        toggle.setText(if (state.monitoring) R.string.harness_stop else R.string.harness_start)
     }
 
-    private fun render(estimate: AnimalMotionEstimate) {
-        val breathing = estimate.breathsPerMinute?.let {
-            "Breathing: $it /min (${(estimate.respirationConfidence * 100).toInt()}% signal confidence)"
-        } ?: "Breathing: uncertain during this motion window"
-        val movement = "Movement: ${estimate.exertionLevel.name.lowercase(Locale.US)} " +
-            "(${String.format(Locale.US, "%.2f", estimate.movementRmsMetersPerSecondSquared)} m/s²)"
-        val alert = if (estimate.highMovementAlert) "\nSustained high movement — check the animal." else ""
-        estimateText.text = "$breathing\n$movement$alert"
-    }
-
-    private fun vibrate() {
-        val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            getSystemService(VibratorManager::class.java)?.defaultVibrator
-        } else {
-            @Suppress("DEPRECATION")
-            getSystemService(Vibrator::class.java)
-        }
-        vibrator?.vibrate(VibrationEffect.createOneShot(250L, VibrationEffect.DEFAULT_AMPLITUDE))
-    }
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).roundToInt()
 }

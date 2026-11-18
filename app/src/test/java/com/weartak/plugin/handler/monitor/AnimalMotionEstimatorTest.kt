@@ -37,6 +37,35 @@ class AnimalMotionEstimatorTest {
         assertNull(estimate!!.breathsPerMinute)
         assertEquals(ExertionLevel.QUIET, estimate.exertionLevel)
         assertFalse(estimate.highMovementAlert)
+        assertEquals(0.0, estimate.exertionFraction, 0.0001)
+    }
+
+    @Test
+    fun jitteredSamples_produceScoreOnlyAfterFullWindow() {
+        val estimator = AnimalMotionEstimator()
+        var timestamp = 0L
+        repeat(810) { index ->
+            val seconds = timestamp / 1e9
+            val x = sin(2 * PI * 2 * seconds).toFloat()
+            val estimate = estimator.addSample(timestamp, x, 0f, 9.81f)
+            if (timestamp < 30_000_000_000L) {
+                assertNull(estimate)
+            } else if (estimate != null) {
+                assertEquals(0.28, estimate.exertionFraction, 0.02)
+                return
+            }
+            timestamp += 40_070_000L + (index % 7 - 3) * 1_000_000L
+        }
+        throw AssertionError("Healthy samples never produced an exertion reading")
+    }
+
+    @Test
+    fun dropout_doesNotPublishAWindowWithAMissingSegment() {
+        val estimator = AnimalMotionEstimator()
+        for (index in 0..800) {
+            if (index in 350..375) continue
+            assertNull(estimator.addSample(index * SAMPLE_PERIOD_NANOS, 0f, 0f, 9.81f))
+        }
     }
 
     @Test
