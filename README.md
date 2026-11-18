@@ -5,7 +5,8 @@
 WearTAK Handler is a standalone Wear OS plugin app that estimates animal breathing rate and
 movement intensity from accelerometer data while a watch is held or secured against a dog or
 horse. Its launcher app works without ATAK Companion. Measurement and movement alerts stay in
-this plugin; the WearTAK host only discovers its plugin service.
+this plugin; the WearTAK host only discovers its plugin service. App version is 5.8.4 to match
+the current WearTAK release.
 
 ## Status
 
@@ -41,8 +42,12 @@ can invalidate estimates.
 The generated debug APK is under `app/build/outputs/apk/debug/`. The SDK AARs in `app/libs/`
 are built from the pinned SDK source revision documented in
 [`third_party/weartak-plugin-sdk/NOTICE.md`](third_party/weartak-plugin-sdk/NOTICE.md).
-Release signing uses the WearTAK sideload signing properties or CI secrets; no signing key is
-included in this repository.
+GitHub Actions runs unit tests and a debug build on branch pushes and pull requests. Pushing a
+version-matching tag such as `v5.8.4` runs a signed release build and publishes an APK named
+`WearTAK-Plugin-Handler-5.8.4-p<N>.apk`. Configure these GitHub Actions secrets for releases:
+`WEARTAK_RELEASE_KEYSTORE_B64`, `RELEASE_STORE_PASSWORD`, `RELEASE_KEY_ALIAS`, and
+`RELEASE_KEY_PASSWORD`. Release signing uses the WearTAK sideload certificate; no signing key
+is included in this repository.
 
 ## Developer Notes
 
