@@ -16,25 +16,23 @@ fi
 printf '%s\n' "${CI_COMMIT_SHA:-}" | grep -Eq '^[0-9a-f]{40}$' || fail "Invalid commit SHA."
 : "${HANDLER_GITHUB_TOKEN:?Set a protected GitHub service credential for Handler}"
 
-umask 077
-askpass="$(mktemp)"
-trap 'rm -f "$askpass"' EXIT
-cat > "$askpass" <<'EOF'
-#!/bin/sh
-case "$1" in
-  *Username*) printf '%s\n' x-access-token ;;
-  *Password*) printf '%s\n' "$HANDLER_GITHUB_TOKEN" ;;
-  *) exit 1 ;;
-esac
-EOF
-chmod +x "$askpass"
-export GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0
+export HANDLER_GITHUB_TOKEN GIT_TERMINAL_PROMPT=0
+# Supply credentials to Git directly; CI runners need not execute an askpass file.
+helper='!f() {
+  if [ "$1" = get ]; then
+    printf "username=x-access-token\npassword=%s\n\n" "$HANDLER_GITHUB_TOKEN"
+  fi
+}; f'
+github_git() {
+  git -c credential.helper= -c credential.useHttpPath=true \
+    -c "credential.$target.helper=$helper" -c http.followRedirects=false "$@"
+}
 
 if [ -n "${CI_COMMIT_TAG:-}" ]; then
   printf '%s\n' "$CI_COMMIT_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$' ||
     fail "Not an eligible version tag."
   tag="refs/tags/$CI_COMMIT_TAG"
-  git -c credential.helper= fetch --no-tags "$target" "$branch"
+  github_git fetch --no-tags "$target" "$branch"
   git merge-base --is-ancestor "$CI_COMMIT_SHA" FETCH_HEAD ||
     fail "Tag target is not in public GitHub main. Sync main first."
   [ "$(git rev-parse "$tag^{commit}")" = "$CI_COMMIT_SHA" ] ||
@@ -48,7 +46,8 @@ else
   fail "Only main and protected version tags are eligible for public sync."
 fi
 
-git -c credential.helper= push --no-follow-tags "$target" "$source:$destination"
+github_git push --no-follow-tags "$target" "$source:$destination"
 local_object="$(git rev-parse "$source")"
-remote_object="$(git -c credential.helper= ls-remote --refs "$target" "$destination" | cut -f 1)"
+listing="$(github_git ls-remote --refs "$target" "$destination")"
+remote_object="$(printf '%s\n' "$listing" | cut -f 1)"
 [ "$remote_object" = "$local_object" ] || fail "Public ref did not match the pushed object."
