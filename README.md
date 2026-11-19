@@ -67,6 +67,26 @@ Release setup:
 4. Set `RELEASE_TESTER` to an authorized GitHub username in
    [Actions variables](https://github.com/aegorsuch/weartak-plugin-handler/settings/variables/actions).
    After a verified publish, the release-testing workflow opens one checklist per pipeline.
+5. Create a separate [fine-grained GitHub token](https://github.com/settings/personal-access-tokens/new)
+   limited to `aegorsuch/weartak-wearos`, with repository **Actions: write** (and automatic
+   Metadata read) only. Store it as `MARKET_CATALOG_DISPATCH_TOKEN` in
+   [TAK.gov CI/CD settings](https://git.tak.gov/weartak-plugins/weartak-plugin-handler/-/settings/ci_cd):
+   masked, hidden, protected, and non-expanding. Never reuse or broaden `HANDLER_GITHUB_TOKEN`.
+   The destination's `main` branch must contain the dispatch-enabled
+   [Market catalog workflow](https://github.com/aegorsuch/weartak-wearos/blob/main/.github/workflows/publish-market-catalog.yml).
+
+After APK digest/readback, published stable release confirmation, and stale owned asset
+cleanup succeed, publication notifies testers and independently requests an immediate Market
+catalog refresh. The Market hook sends only `{"ref":"main"}` to the fixed destination
+workflow dispatch endpoint, refuses redirects, times out after 30 seconds, and requires HTTP
+204. Skipped/stale, failed, debug, and prerelease builds never trigger it. The existing hourly
+catalog fallback remains unchanged; accepted dispatch does not mean catalog refresh has finished.
+
+A missing Market token or failed notification fails the publish job **after the release stays
+published**. Configure the token/workflow before activation. Retry the same GitLab publish job
+after fixing notification access/connectivity: it rechecks the APK and release, finishes any
+remaining cleanup, and resends notifications without duplicating release assets or tester
+checklists. A retry superseded by a newer pipeline skips notifications.
 
 Publisher and checklist tooling adapted from the GPLv3
 [WearTAK LACE pipeline](https://github.com/aegorsuch/weartak-plugin-lace/tree/main/ci).
