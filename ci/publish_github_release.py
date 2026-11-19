@@ -26,10 +26,45 @@ LABEL_PREFIX = "handler-rolling-v1:"
 # Handled by .github/workflows/release-testing.yml on the GitHub default branch.
 DISPATCH_EVENT = "handler-release-published"
 OUTPUT = Path("app/build/outputs/apk/release")
+MARKET_DISPATCH_URL = (
+    "https://api.github.com/repos/aegorsuch/weartak-wearos/"
+    "actions/workflows/publish-market-catalog.yml/dispatches"
+)
 
 
 class PublishError(Exception):
     pass
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise PublishError("Market dispatch redirects are not allowed.")
+
+
+def dispatch_market_catalog(token):
+    if not token:
+        raise PublishError("Missing protected MARKET_CATALOG_DISPATCH_TOKEN.")
+    try:
+        request = urllib.request.Request(
+            MARKET_DISPATCH_URL,
+            data=b'{"ref":"main"}',
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json",
+                "Content-Type": "application/json",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "User-Agent": "Handler-GitLab-release",
+            },
+            method="POST",
+        )
+        opener = urllib.request.build_opener(NoRedirect())
+        with opener.open(request, timeout=30) as response:
+            if response.status != 204:
+                raise PublishError("Market dispatch did not return HTTP 204.")
+    except urllib.error.HTTPError as error:
+        raise PublishError(f"Market dispatch returned HTTP {error.code}.") from None
+    except (urllib.error.URLError, OSError, ValueError):
+        raise PublishError("Market dispatch transport/configuration failure.") from None
 
 
 class SafeRedirect(urllib.request.HTTPRedirectHandler):
@@ -221,7 +256,7 @@ def managed_asset(asset):
     return asset_pipeline(asset) is not None
 
 
-def publish(api, state, apk, digest, version, code):
+def publish(api, state, apk, digest, version, code, *, market_token=None):
     repository = api.request("GET", "")
     if (repository.get("full_name") != REPO or
             repository.get("archived") is not False or
@@ -307,15 +342,23 @@ def publish(api, state, apk, digest, version, code):
     print(f"Published {title}: version {version} ({code}), SHA256 {digest}")
     # Only a verified build reaches testers. The workflow re-reads the release itself and
     # deduplicates per pipeline, so retrying a failed notification is safe.
+    notification_errors = []
     try:
         api.request("POST", "dispatches", {
             "event_type": DISPATCH_EVENT,
             "client_payload": {"pipeline_id": state["pipeline_id"], "release_id": release_id},
         })
     except PublishError:
+        notification_errors.append("release-testing notification failed.")
+    try:
+        dispatch_market_catalog(market_token)
+    except PublishError as error:
+        notification_errors.append(f"Market refresh notification failed: {error}")
+    if notification_errors:
         raise PublishError(
-            "The release is published, but the release-testing notification failed. "
-            "Retry this job; the release and tester checklist are not duplicated."
+            "The release is published, but " + " ".join(notification_errors)
+            + " Retry this job to reverify the same pipeline and resend notifications; "
+            "the release and tester checklist are not duplicated."
         ) from None
 
 
@@ -323,7 +366,10 @@ def main():
     try:
         state = configuration(os.environ)
         apk, digest, version, code = artifact(Path.cwd())
-        publish(GitHub(os.environ["HANDLER_GITHUB_TOKEN"]), state, apk, digest, version, code)
+        publish(
+            GitHub(os.environ["HANDLER_GITHUB_TOKEN"]), state, apk, digest, version, code,
+            market_token=os.environ.get("MARKET_CATALOG_DISPATCH_TOKEN"),
+        )
     except (PublishError, OSError, ValueError, KeyError, TypeError, urllib.error.URLError) as error:
         # urllib transport errors can contain signed URLs; do not echo their details.
         message = str(error) if isinstance(error, PublishError) else type(error).__name__

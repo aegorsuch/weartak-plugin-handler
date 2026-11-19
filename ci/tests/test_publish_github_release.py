@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -119,6 +119,9 @@ class FakeGitHub:
 
 class PublisherTests(unittest.TestCase):
     def setUp(self):
+        market_patch = patch.object(p, "dispatch_market_catalog")
+        self.market_dispatch = market_patch.start()
+        self.addCleanup(market_patch.stop)
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
@@ -143,10 +146,102 @@ class PublisherTests(unittest.TestCase):
         (self.root / p.OUTPUT / "output-metadata.json").write_text(json.dumps(self.metadata))
 
     def publish(self, api):
-        p.publish(api, self.state, *p.artifact(self.root))
+        p.publish(api, self.state, *p.artifact(self.root), market_token="market-only-token")
 
     def assert_no_writes(self, api):
         self.assertFalse([c for c in api.calls if c[0] != "GET"])
+        self.market_dispatch.assert_not_called()
+
+    def test_market_dispatch_follows_readback_confirmation_and_cleanup(self):
+        api = FakeGitHub(self.state | {"pipeline_iid": 11})
+        api.items = [asset(9, 11)]
+
+        def dispatch(token):
+            self.assertEqual(token, "market-only-token")
+            self.assertFalse(api.release["draft"])
+            self.assertFalse(api.release["prerelease"])
+            self.assertEqual(p.state_from(api.release, "7062")["sha256"], self.digest)
+            self.assertNotIn(9, [a["id"] for a in api.items])
+            api.calls.append(("MARKET", "", None))
+
+        self.market_dispatch.side_effect = dispatch
+        self.publish(api)
+        calls = [c[:2] for c in api.calls]
+        self.assertLess(calls.index(("DOWNLOAD", "100")),
+                        calls.index(("GET", "releases/1")))
+        self.assertLess(calls.index(("GET", "releases/1")),
+                        calls.index(("DELETE", "releases/assets/9")))
+        self.assertEqual(calls[-1], ("MARKET", ""))
+        self.market_dispatch.assert_called_once_with("market-only-token")
+
+    def test_failed_release_or_cleanup_never_dispatches_market(self):
+        for failure in ("download", "upload", "confirmation", "cleanup", "debug", "prerelease"):
+            with self.subTest(failure=failure):
+                api = FakeGitHub(self.state | {"pipeline_iid": 11})
+                api.items = [asset(9, 11)]
+                if failure == "download":
+                    api.bad_download = True
+                elif failure == "upload":
+                    api.fail = lambda method, path: method == "POST"
+                elif failure == "confirmation":
+                    api.fail = lambda method, path: method == "GET" and path == "releases/1"
+                elif failure == "cleanup":
+                    api.fail = lambda method, path: method == "DELETE"
+                elif failure == "debug":
+                    self.metadata["variantName"] = "debug"
+                    self.write_metadata()
+                else:
+                    self.metadata["variantName"] = "release"
+                    self.write_metadata()
+                    api.release["prerelease"] = True
+                with self.assertRaises(p.PublishError):
+                    self.publish(api)
+                self.market_dispatch.assert_not_called()
+
+    def test_market_failure_keeps_published_release_and_retry_reverifies(self):
+        api = FakeGitHub()
+        self.market_dispatch.side_effect = p.PublishError("Missing protected token.")
+        with self.assertRaisesRegex(p.PublishError, "release is published.*Market refresh"):
+            self.publish(api)
+        self.assertFalse(api.release["draft"])
+        self.assertEqual(len(api.dispatches), 1)
+        api.calls.clear()
+        self.market_dispatch.side_effect = None
+        self.publish(api)
+        self.assertEqual(self.market_dispatch.call_count, 2)
+        self.assertEqual(len(api.items), 1)
+        self.assertIn(("DOWNLOAD", "100", None), api.calls)
+        self.assertIn(("GET", "releases/1", None), api.calls)
+        self.assertFalse(any(c[0] == "POST" and "assets?" in c[1] for c in api.calls))
+
+    def test_tester_notification_failure_does_not_block_market(self):
+        api = FakeGitHub()
+        api.fail = lambda method, path: path == "dispatches"
+        with self.assertRaisesRegex(p.PublishError, "release-testing notification failed"):
+            self.publish(api)
+        self.market_dispatch.assert_called_once_with("market-only-token")
+
+    def test_main_keeps_source_and_market_credentials_separate(self):
+        env = environment() | {"MARKET_CATALOG_DISPATCH_TOKEN": "market-only-token"}
+        api = FakeGitHub()
+        with patch.dict(p.os.environ, env, clear=True), \
+                patch.object(p.Path, "cwd", return_value=self.root), \
+                patch.object(p, "GitHub", return_value=api) as github:
+            self.assertEqual(p.main(), 0)
+        github.assert_called_once_with("mock-token")
+        self.market_dispatch.assert_called_once_with("market-only-token")
+
+    def test_main_missing_market_token_fails_only_after_publication(self):
+        api = FakeGitHub()
+        self.market_dispatch.side_effect = p.PublishError("Missing protected token.")
+        with patch.dict(p.os.environ, environment(), clear=True), \
+                patch.object(p.Path, "cwd", return_value=self.root), \
+                patch.object(p, "GitHub", return_value=api), \
+                patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            self.assertEqual(p.main(), 1)
+        self.assertFalse(api.release["draft"])
+        self.market_dispatch.assert_called_once_with(None)
+        self.assertIn("release is published", stderr.getvalue())
 
     def test_initial_release_is_draft_until_verified_then_stable(self):
         api = FakeGitHub()
@@ -186,9 +281,11 @@ class PublisherTests(unittest.TestCase):
         with self.assertRaises(p.PublishError):
             self.publish(api)
         self.assertEqual(api.dispatches, [])
+        self.market_dispatch.assert_not_called()
         newer = FakeGitHub(self.state | {"pipeline_iid": 13, "pipeline_id": "457"})
         self.publish(newer)
         self.assertEqual(newer.dispatches, [])
+        self.market_dispatch.assert_not_called()
 
     def test_notification_failure_is_reported_and_retry_notifies_once(self):
         api = FakeGitHub()
@@ -484,6 +581,59 @@ class PublisherTests(unittest.TestCase):
         with patch.dict(p.os.environ, {}, clear=True), patch.object(p, "GitHub") as github:
             self.assertEqual(p.main(), 1)
             github.assert_not_called()
+
+
+class MarketTransportTests(unittest.TestCase):
+    def test_fixed_request_uses_only_destination_token_and_requires_204(self):
+        response = Mock(status=204)
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        with patch.object(p.urllib.request, "build_opener") as build:
+            build.return_value.open.return_value = response
+            p.dispatch_market_catalog("market-only-token")
+            self.assertIsInstance(build.call_args.args[0], p.NoRedirect)
+            call = build.return_value.open.call_args
+            request = call.args[0]
+            self.assertEqual(request.full_url, (
+                "https://api.github.com/repos/aegorsuch/weartak-wearos/"
+                "actions/workflows/publish-market-catalog.yml/dispatches"
+            ))
+            self.assertEqual(request.method, "POST")
+            self.assertEqual(request.data, b'{"ref":"main"}')
+            self.assertEqual(request.get_header("Authorization"), "Bearer market-only-token")
+            self.assertEqual(call.kwargs["timeout"], 30)
+            for status in (200, 201, 202, 301, 302, 307, 308):
+                response.status = status
+                with self.assertRaisesRegex(p.PublishError, "HTTP 204"):
+                    p.dispatch_market_catalog("market-only-token")
+
+    def test_missing_token_never_opens_connection_or_falls_back_to_source(self):
+        with patch.dict(p.os.environ, {"HANDLER_GITHUB_TOKEN": "source-secret"}, clear=True), \
+                patch.object(p.urllib.request, "build_opener") as build:
+            with self.assertRaisesRegex(p.PublishError, "MARKET_CATALOG_DISPATCH_TOKEN"):
+                p.dispatch_market_catalog(None)
+            build.assert_not_called()
+
+    def test_redirects_refused_and_errors_redacted(self):
+        request = urllib.request.Request(
+            p.MARKET_DISPATCH_URL, data=b'{"ref":"main"}', method="POST",
+            headers={"Authorization": "Bearer secret"},
+        )
+        for code in (301, 302, 303, 307, 308):
+            with self.subTest(code=code), self.assertRaises(p.PublishError):
+                p.NoRedirect().redirect_request(
+                    request, None, code, "secret", {}, "https://other.example/secret"
+                )
+        errors = [
+            urllib.error.HTTPError("secret", 403, "secret", {}, None),
+            urllib.error.URLError("secret"), TimeoutError("secret"), ValueError("secret"),
+        ]
+        with patch.object(p.urllib.request, "build_opener") as build:
+            for error in errors:
+                build.return_value.open.side_effect = error
+                with self.assertRaises(p.PublishError) as caught:
+                    p.dispatch_market_catalog("secret")
+                self.assertNotIn("secret", str(caught.exception))
 
 
 if __name__ == "__main__":
