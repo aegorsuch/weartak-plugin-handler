@@ -104,6 +104,9 @@ Publisher and checklist tooling adapted from the GPLv3
 - Confidence and movement values depend on sensor placement, sampling rate, gait, and animal
   physiology. Validate against an independent reference before operational use.
 - SDK license notices are preserved under `third_party/weartak-plugin-sdk/`.
+- The dog-and-horse launcher vector uses original geometric line art with user-authorized
+  Houndmaster dog styling. Artwork provenance and the upstream rights notice are recorded
+  in [`third_party/houndmaster-icon/NOTICE.md`](third_party/houndmaster-icon/NOTICE.md).
 
 ## License
 
